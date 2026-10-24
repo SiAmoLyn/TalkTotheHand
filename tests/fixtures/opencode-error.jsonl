@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1000,"sessionID":"ses_error","part":{"id":"step1"}}
+{"type":"error","timestamp":1100,"sessionID":"ses_error","error":{"name":"ProviderError","data":{"message":"Synthetic provider unavailable"}}}

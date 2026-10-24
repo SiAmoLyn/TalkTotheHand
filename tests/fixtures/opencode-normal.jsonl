@@ -1,0 +1,4 @@
+{"type":"step_start","timestamp":1000,"sessionID":"ses_fixture_pkg2","part":{"id":"step1","type":"step-start"}}
+{"type":"text","timestamp":1100,"sessionID":"ses_fixture_pkg2","part":{"type":"text","text":"Synthetic offline fixture; pre-staged AABB data only."}}
+{"type":"tool_use","timestamp":1200,"sessionID":"ses_fixture_pkg2","part":{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"bounds.json"},"output":"Fixture bounds inspected"}}}
+{"type":"step_finish","timestamp":2000,"sessionID":"ses_fixture_pkg2","part":{"id":"finish1","type":"step-finish","reason":"stop","cost":0,"tokens":{"input":12,"output":7,"reasoning":1,"cache":{"read":2,"write":0}}}}

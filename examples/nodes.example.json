@@ -1,0 +1,14 @@
+{
+  "node-a": {
+    "target": "user@HOST_ALIAS",
+    "ssh_args": [],
+    "cwd": "REMOTE_WORKSPACE",
+    "via": null
+  },
+  "node-b": {
+    "target": "user@SECOND_HOST_ALIAS",
+    "ssh_args": ["-p", "22"],
+    "cwd": "REMOTE_WORKSPACE",
+    "via": "node-a"
+  }
+}

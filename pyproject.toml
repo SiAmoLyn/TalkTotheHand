@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "talktothehand"
+version = "0.1.0"
+description = "Local LangGraph execution with guarded tools and OpenCode JSON evidence"
+requires-python = ">=3.12,<3.13"
+dependencies = ["langgraph>=1.0,<2", "pydantic>=2.10,<3", "pyyaml>=6,<7", "mcp==2.3.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+hand = "hand.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--basetemp=work/pytest"
+
+[tool.setuptools.package-data]
+hand = ["fixtures/*.json", "fixtures/*.jsonl"]

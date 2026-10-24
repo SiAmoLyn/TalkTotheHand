@@ -1,0 +1,3 @@
+{"type":"step_start","timestamp":1000,"sessionID":"ses_timeout","part":{"id":"step1"}}
+{"type":"text","timestamp":1100,"sessionID":"ses_timeout","part":{"text":"Partial output before timeout"}}
+{"type":"timeout","timestamp":2000,"sessionID":"ses_timeout","error":{"message":"Recorded synthetic timeout"}}

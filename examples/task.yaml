@@ -1,0 +1,20 @@
+id: example-text
+title: Local fake text task
+goal: Exercise the Package 1 workflow without any external calls
+tool_class: text
+context_files: []
+spec: Produce an explicitly labelled fake text deliverable
+redlines:
+  - No network or real model calls
+gates:
+  - fake_artifact_check
+budget:
+  max_minutes: 1
+  max_tokens: 100
+deliverables:
+  - path: result.txt
+    type: text
+approval_points:
+  - id: explicit-demo-approval
+    reason: Demonstrate manual interrupt and resume
+    triggered: true
