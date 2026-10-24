@@ -71,6 +71,14 @@ adapter), `HAND_NODES_FILE` (SSH node config; see `examples/`).
 - `examples/` — example task package and node config (placeholders only)
 - `tools/` — project-local adapters (e.g. CLIP similarity)
 
+## Experiments
+
+- [`experiments/nebula-pilot/`](experiments/nebula-pilot/README.md) — a
+  self-hosted Nebula transport pilot. Currently **blocked in the agent's
+  VM environment** (no direct data path between the VM and the other
+  machines); the write-up marks the problems found, including what
+  happens when the agent uses it from there.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

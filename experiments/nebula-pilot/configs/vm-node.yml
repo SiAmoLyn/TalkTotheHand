@@ -1,0 +1,33 @@
+# sisi-pilot PKG6 — flipped 2026-10-25: VM is a node, mini (.2) is lighthouse.
+# Credential paths are bare filenames: run from ~/nebula-pilot (flat layout).
+pki:
+  ca: ca.crt
+  cert: vm-lighthouse.crt
+  key: vm-lighthouse.key
+
+static_host_map:
+  "192.168.100.2": ["__MINI_TAILNET_IP__:4242"]
+
+lighthouse:
+  am_lighthouse: false
+  hosts: ["192.168.100.2"]
+
+relay:
+  relays: ["192.168.100.2"]
+
+listen:
+  host: "::"
+  port: 4242
+
+tun:
+  dev: nebula1
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      cidr: 192.168.100.0/24
+  inbound:
+    - port: any
+      proto: any
+      cidr: 192.168.100.0/24

@@ -1,0 +1,33 @@
+# sisi-pilot PKG6 — flipped 2026-10-25: mini is the lighthouse.
+# The VM host accepts no unsolicited inbound on its tailnet address
+# (handshakes to it timed out), so the always-on home mini takes the role.
+# Credential paths are bare filenames: run from a directory holding
+# ca.crt / mac-mini.crt / mac-mini.key flat beside this config.
+pki:
+  ca: ca.crt
+  cert: mac-mini.crt
+  key: mac-mini.key
+
+lighthouse:
+  am_lighthouse: true
+  hosts: []
+
+relay:
+  am_relay: true
+
+listen:
+  host: "::"
+  port: 4242
+
+tun:
+  dev: nebula1
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      cidr: 192.168.100.0/24
+  inbound:
+    - port: any
+      proto: any
+      cidr: 192.168.100.0/24
