@@ -25,6 +25,9 @@ class EvidenceStatus(StrEnum):
     VERIFIED = "verified"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
+    # Produced by the simulated (fake) executor: a complete-looking run that
+    # must never be presented as verified real work.
+    SIMULATED = "simulated"
 
 
 class Budget(Contract):
@@ -58,7 +61,7 @@ class TaskPackage(Contract):
     context_files: list[str]
     spec: str = Field(min_length=1)
     redlines: list[str]
-    gates: list[str]
+    gates: list[str] = Field(min_length=1)
     budget: Budget
     deliverables: list[Deliverable] = Field(min_length=1)
     executor_hint: str | None = None

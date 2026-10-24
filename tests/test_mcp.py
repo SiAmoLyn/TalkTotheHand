@@ -115,11 +115,11 @@ async def test_operator_cli_approval_is_visible_to_connected_mcp(client, tmp_pat
     capsys.readouterr()
     state = await call(client, "hand_task_status", {"task_id": task_data["id"]})
     assert state["status"] == state["stage"] == "RETURNED"
-    assert state["evidence_summary"]["status"] == "verified"
+    assert state["evidence_summary"]["status"] == "simulated"
     assert state["evidence_summary"]["unresolved_count"] == 0
     assert state["evidence_summary"]["cost"]["tokens"] == 0
     evidence = (await call(client, "hand_get_evidence", {"task_id": task_data["id"]}))["evidence"]
-    assert EvidencePackage.model_validate(evidence).status == "verified"
+    assert EvidencePackage.model_validate(evidence).status == "simulated"
     assert evidence == json.loads((tmp_path / "outbox/test-task/evidence.json").read_text())
     for artifact in evidence["artifacts"]:
         assert hashlib.sha256(Path(artifact["path"]).read_bytes()).hexdigest() == artifact["sha256"]
@@ -262,7 +262,7 @@ async def test_crash_recovery_resumes_checkpoint_without_auto_approval(client, t
         assert not (tmp_path / "work/test-task/demo.txt").exists()
     else:
         evidence = (await call(client, "hand_get_evidence", {"task_id": task_data["id"]}))["evidence"]
-        assert EvidencePackage.model_validate(evidence).status == "verified"
+        assert EvidencePackage.model_validate(evidence).status == "simulated"
 
 
 async def test_recovery_status_race_cannot_use_cli_default_approval(client, tmp_path, task_data, monkeypatch):
@@ -408,7 +408,7 @@ async def test_real_stdio_cli_submit_status_resume_evidence_and_restart(tmp_path
             assert EvidencePackage.model_validate(evidence).status == "blocked"
             normal = {**task_data, "id": "stdio-success", "approval_points": []}
             assert (await submit(client, normal))["status"] == "RETURNED"
-            assert (await call(client, "hand_get_evidence", {"task_id": "stdio-success"}))["evidence"]["status"] == "verified"
+            assert (await call(client, "hand_get_evidence", {"task_id": "stdio-success"}))["evidence"]["status"] == "simulated"
         async with Client(parameters, mode=mode, cache=None) as client:
             state = await call(client, "hand_task_status", {"task_id": "test-task"})
             assert state["status"] == "BLOCKED"

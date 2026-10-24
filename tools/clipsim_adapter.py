@@ -14,6 +14,7 @@ weights are not cached locally it fails loudly instead of fetching.
 import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -27,15 +28,28 @@ def compute_score(image: str, reference: str) -> float:
     from PIL import Image
 
     device = "cpu"
+    # Offline contract: OpenAI CLIP's load() downloads weights over urllib
+    # when the cache is cold, ignoring HF offline switches (audit A12).
+    # Refuse unless the exact weights file is already cached locally.
+    weights = Path.home() / ".cache" / "clip" / "ViT-L-14.pt"
+    if not weights.is_file():
+        raise RuntimeError(f"CLIP weights not cached at {weights}; offline adapter will not download")
     model, preprocess = clip.load("ViT-L/14", device=device)
 
     def emb(path: str):
         x = preprocess(Image.open(path).convert("RGB")).unsqueeze(0).to(device)
         with torch.no_grad():
             e = model.encode_image(x).cpu().numpy()
-        return (e / np.linalg.norm(e, axis=-1, keepdims=True))[0]
+        norm = np.linalg.norm(e, axis=-1, keepdims=True)
+        # A zero/non-finite norm yields NaN embeddings; never let the clamp
+        # below rewrite a degenerate score into a valid one (audit A02).
+        if not np.all(np.isfinite(norm)) or np.any(norm == 0):
+            raise ValueError("Degenerate CLIP embedding (zero or non-finite norm)")
+        return (e / norm)[0]
 
     score = float(emb(image) @ emb(reference))
+    if not np.isfinite(score):
+        raise ValueError("Non-finite CLIP score")
     return max(-1.0, min(1.0, score))  # guard float overshoot (identical imgs can give 1.0000002)
 
 

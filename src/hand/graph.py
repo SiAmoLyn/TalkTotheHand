@@ -148,12 +148,15 @@ class HandRunner:
 
     def _paths(self, task: TaskPackage) -> tuple[Path, list[Path]]:
         workspace = project_path(self.root, f"work/{task.id}")
-        reserved = {"src", "tests", ".git", ".venv", ".codex", ".agents", ".aws", "outbox", "inbox"}
+        # "tools" holds the acceptance adapters themselves; case-folded
+        # comparison because APFS resolves "Src" to the same directory
+        # (audit A06/A07/G2).
+        reserved = {"src", "tests", "tools", ".git", ".venv", ".codex", ".agents", ".aws", "outbox", "inbox"}
         allowed = []
         for declared in task.allowed_directories:
             path = project_path(self.root, declared)
             relative = path.relative_to(self.root)
-            if not relative.parts or relative.parts[0] in reserved or relative.parts[0] == "work":
+            if not relative.parts or relative.parts[0].casefold() in reserved or relative.parts[0].casefold() == "work":
                 raise ValueError(f"Declared directory is not a project-copy directory: {declared}")
             allowed.append(path)
         return workspace, allowed
@@ -344,13 +347,20 @@ class HandRunner:
         temporary.replace(target)
         return evidence.model_dump(mode="json")
 
+    def _effective_executor(self, task: TaskPackage) -> Executor:
+        return self.executor or (OpenCodeExecutor(cancel=self.cancel_event)
+                                 if task.executor_hint in ("opencode", "opencode-fixture") else FakeExecutor())
+
     def _returned(self, state: HandState) -> HandState:
         # Revalidate the candidate and gates immediately before publishing evidence.
         gated = self._gating(state, run_tools=False)
         if gated.get("reason"):
             return self._blocked({**state, "reason": gated["reason"]})
         evidence = EvidencePackage.model_validate(state["candidate"])
-        evidence.status = EvidenceStatus.VERIFIED
+        # A simulated run must never be stamped verified (audit G3).
+        task = TaskPackage.model_validate(state["task"])
+        simulated = isinstance(self._effective_executor(task), FakeExecutor)
+        evidence.status = EvidenceStatus.SIMULATED if simulated else EvidenceStatus.VERIFIED
         evidence.logs = [*state["logs"], "Selected automatic gates passed; Sisi retains human acceptance authority"]
         evidence.cost.tokens = state["tokens"]
         evidence.cost.minutes = state["active_minutes"]

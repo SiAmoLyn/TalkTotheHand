@@ -51,10 +51,13 @@ def fs_guard(path: str | Path, *, workspace: Path, allowed_directories: list[Pat
     if not any(_inside(candidate, root) for root in roots):
         raise PathViolation(f"Path outside task whitelist: {path}")
     # Never allow a deliverable/context path to modify a repository's internals.
-    if ".git" in candidate.parts:
+    # Compare case-folded: on case-insensitive filesystems (default APFS) a
+    # differently-cased spelling names the same file (audit A06/G1).
+    folded = {part.casefold() for part in candidate.parts}
+    if ".git" in folded:
         raise PathViolation(f"Git internals are reserved: {path}")
-    forbidden = {".ssh", ".aws", ".gnupg", "Secure Vault", "MEMORY.md", "credentials.json", "auth.json", "token.json"}
-    if forbidden.intersection(candidate.parts):
+    forbidden = {".ssh", ".aws", ".gnupg", "secure vault", "memory.md", "credentials.json", "auth.json", "token.json"}
+    if forbidden.intersection(folded):
         raise PathViolation(f"Sensitive path is forbidden: {path}")
     return candidate
 
@@ -156,13 +159,16 @@ def blender_run(script: Path, *, workspace: Path, allowed_directories: list[Path
             raise FileNotFoundError(f"Blender script missing: {guarded}")
         before = _files(workspace, allowed_directories)
         binary = executable or os.environ.get("HAND_BLENDER", str(Path.home() / "workspace/tools/bin/blender"))
-        result = _command_report([binary, "--background", "--factory-startup", "-noaudio", "--python", str(guarded)],
+        # --python-exit-code: a script exception must fail the run; Blender
+        # otherwise prints the traceback and still exits 0 (audit A01/G4).
+        result = _command_report([binary, "--background", "--factory-startup", "-noaudio",
+                                  "--python-exit-code", "1", "--python", str(guarded)],
                                  workspace=workspace, target=target, timeout=timeout, cancel=cancel, allowed_directories=allowed_directories)
         result["artifacts"] = [{"path": str(path), "sha256": digest}
                                for path, digest in _files(workspace, allowed_directories).items()
                                if before.get(path) != digest]
         return result
-    return _report("blender_run", workspace, allowed_directories, result_path, action)
+    return _pkg4_report("blender_run", workspace, allowed_directories, result_path, [script], action)
 
 
 def _test_counts(output: str) -> tuple[int, int]:
@@ -198,7 +204,7 @@ def godot_run(project: Path, *, workspace: Path, allowed_directories: list[Path]
             result.update(status="failed" if failed else "blocked", passed=False,
                           error=f"Godot verification FAIL={failed}, PASS={passed}; explicit PASS evidence required")
         return result
-    return _report("godot_run", workspace, allowed_directories, result_path, action)
+    return _pkg4_report("godot_run", workspace, allowed_directories, result_path, [project], action)
 
 
 def _number(value: Any, label: str, *, nonnegative: bool = False) -> float:
@@ -269,7 +275,7 @@ def gate_aabb(artifact: Path, *, workspace: Path, allowed_directories: list[Path
         return {"status": "passed" if passed else "failed", "passed": passed, "checks": checks,
                 "source_path": str(source), "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "dimensions_checked": len(expected_dimensions or {})}
-    return _report("gate_aabb", workspace, allowed_directories, result_path, action)
+    return _pkg4_report("gate_aabb", workspace, allowed_directories, result_path, [artifact], action)
 
 
 def gate_clipsim(artifact: Path, reference: Path, *, workspace: Path,
@@ -314,7 +320,7 @@ def gate_clipsim(artifact: Path, reference: Path, *, workspace: Path,
         result.update(score=score, reference_band=[low, high], reference_sha256=reference_sha256,
                       passed=passed, status="passed" if passed else "failed")
         return result
-    return _report("gate_clipsim", workspace, allowed_directories, result_path, action)
+    return _pkg4_report("gate_clipsim", workspace, allowed_directories, result_path, [artifact, reference], action)
 
 
 def _pkg4_report(tool: str, workspace: Path, allowed: list[Path] | None,
@@ -324,9 +330,8 @@ def _pkg4_report(tool: str, workspace: Path, allowed: list[Path] | None,
         try:
             target = fs_guard(result_path, workspace=workspace, allowed_directories=allowed)
             outputs = {target}
-            if tool == "ssh_dispatch":
-                outputs.update(fs_guard(target.with_suffix(suffix), workspace=workspace, allowed_directories=allowed)
-                               for suffix in (".stdout.log", ".stderr.log"))
+            outputs.update(fs_guard(target.with_suffix(suffix), workspace=workspace, allowed_directories=allowed)
+                           for suffix in (".stdout.log", ".stderr.log"))
             sources = {fs_guard(path, workspace=workspace, allowed_directories=allowed) for path in inputs}
             if outputs.intersection(sources):
                 raise ValueError("Report/log paths must not overwrite inputs")

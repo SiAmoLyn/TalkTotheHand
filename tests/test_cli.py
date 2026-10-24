@@ -11,7 +11,7 @@ def test_demo_and_status(tmp_path, monkeypatch, capsys):
     assert "Demo passed" in capsys.readouterr().out
     files = list((tmp_path / "outbox").glob("*/evidence.json"))
     assert len(files) == 1
-    assert json.loads(files[0].read_text())["status"] == "verified"
+    assert json.loads(files[0].read_text())["status"] == "simulated"
     assert cli.main(["status", files[0].parent.name]) == 0
     assert '"status": "RETURNED"' in capsys.readouterr().out
 

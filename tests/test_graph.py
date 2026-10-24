@@ -20,7 +20,8 @@ def test_full_workflow(tmp_path, task_data):
         assert runner.status(task_data["id"])["next"] == []
         assert runner.saver.get_tuple({"configurable": {"thread_id": task_data["id"]}})
     evidence = EvidencePackage.model_validate_json((tmp_path / "outbox/test-task/evidence.json").read_text())
-    assert evidence.status == "verified"
+    # The default executor is simulated; its evidence must not claim verified.
+    assert evidence.status == "simulated"
     assert evidence.gate_reports["fake_artifact_check"]["fake"] is True
     for artifact in evidence.artifacts:
         assert hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest() == artifact.sha256

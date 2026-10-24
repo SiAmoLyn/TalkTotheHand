@@ -78,13 +78,13 @@ def load_config(config_file: Path, *, root: Path, log_dir: Path | None = None,
 
 def read_state(path: Path, *, target: str | None = None) -> dict[str, Any]:
     if not path.exists():
-        return {"phase": "idle", "last_action_at": None, "target": target, "closure_done": False}
+        return {"phase": "idle", "last_action_at": None, "target": target, "closure_done": False, "recovered_at": None}
     state = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(state, dict) or state.get("phase") not in PHASES:
         raise ValueError("Invalid monitor state phase")
     if target is not None and state.get("target") != target:
         raise ValueError("Monitor state target differs from config; use a separate state file")
-    for key in ("last_action_at", "phase_at", "detected_at", "action1_at", "last_action2_at", "updated_at"):
+    for key in ("last_action_at", "phase_at", "detected_at", "action1_at", "last_action2_at", "updated_at", "recovered_at"):
         if state.get(key) is not None:
             _finite(state[key], key)
     if not isinstance(state.get("closure_done", False), bool):
@@ -129,11 +129,18 @@ def _record(line: str, zone: ZoneInfo, *, configured_target: str) -> tuple[float
         connection = re.search(r"\b(?:conn|tcp)\{([^{}]*)\}", rest)
         if connection:
             fields = dict(re.findall(r"(?:^|\s)(\w+)=([^\s]+)", connection.group(1)))
-            # dst may be host:port or host@resolved-ip:port (tcp shape).
-            destination = re.match(r"([^:@\s]+)", fields.get("dst", ""))
-            if not destination:
+            # dst may be host:port or host@resolved-ip:port (tcp shape), or
+            # a bracketed IPv6 literal (audit G7).
+            raw_dst = fields.get("dst", "")
+            if raw_dst.startswith("["):
+                closing = raw_dst.find("]")
+                host = raw_dst[1:closing] if closing > 1 else ""
+            else:
+                match = re.match(r"([^:@\s]+)", raw_dst)
+                host = match.group(1) if match else ""
+            if not host:
                 raise ValueError("Missing/invalid dst host")
-            if configured_target not in destination.group(1):
+            if configured_target not in host:
                 return None
             target = configured_target
             received = int(fields["recv"])
@@ -243,16 +250,20 @@ def _advance(state: dict[str, Any], observation: dict[str, Any], config: dict[st
             state["action1_at"] = now
         if name == "action2":
             state["last_action2_at"] = now
-        if name == "action3":
-            state["closure_done"] = True
+        # closure_done is set by monitor_once only after action3's receipt
+        # passes; reserving the action must not mark closure complete (A09).
         return name, "action_reserved"
 
     if phase == "idle":
         if blackhole:
             move("detected")
-            state.update(detected_at=now, closure_done=False, action1_at=None, last_action2_at=None)
+            state.update(detected_at=now, closure_done=False, recovered_at=None, action1_at=None, last_action2_at=None)
     elif phase in {"detected", "recheck"} and recovered:
         move("recovered")
+        # Persist the confirmation: the closure action may have to wait out
+        # the minimum action interval, by which time the confirming record
+        # can age out of the detection window (audit G6).
+        state["recovered_at"] = now
     elif phase == "detected" and blackhole:
         return action("action1")
     elif phase in {"action1", "action2"}:
@@ -267,9 +278,9 @@ def _advance(state: dict[str, Any], observation: dict[str, Any], config: dict[st
     elif phase == "recovered":
         if blackhole:
             move("detected")
-            state.update(detected_at=now, closure_done=False, action1_at=None, last_action2_at=None)
+            state.update(detected_at=now, closure_done=False, recovered_at=None, action1_at=None, last_action2_at=None)
         elif config["actions"]["action3"]["enabled"] and not state.get("closure_done"):
-            if not recovered:
+            if not recovered and not state.get("recovered_at"):
                 return None, "awaiting_recovery_confirmation"
             return action("action3")
         else:
@@ -339,6 +350,10 @@ def monitor_once(config_file: Path, *, root: Path, log_dir: Path | None = None,
                 except Exception as exc:
                     state["last_action_result"] = {"action": action, "status": "blocked", "at": now, "error": str(exc)}
                     result.update(status="blocked", passed=False, error=str(exc))
+                if action == "action3":
+                    # Closure is complete only on a passing receipt; a failed
+                    # closure stays pending and may retry (audit A09).
+                    state["closure_done"] = state["last_action_result"].get("status") == "passed"
             if reason.endswith("_disabled"):
                 result.update(status="blocked", passed=False, error="Required monitor action is disabled")
             _save(config["state_file"], state)

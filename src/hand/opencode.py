@@ -12,6 +12,7 @@ class EventParser:
         self.steps = []
         self.errors = []
         self.tokens = 0
+        self.usage_missing = False
         self.reported_cost = 0.0
         self.finished = False
         self.timestamps = []
@@ -42,10 +43,19 @@ class EventParser:
                 raise ValueError("part must be an object")
             if kind in ("text", "tool_use", "tool_call", "step_start", "step_finish"):
                 self.steps.append({"type": kind, "part": part})
+            if kind == "step_start":
+                # A new step invalidates any earlier terminal marker; only a
+                # terminal finish with no step after it proves completion
+                # (audit A03).
+                self.finished = False
             if kind == "step_finish":
                 # Native events repeat totals if replayed; count each part once.
                 identity = part.get("id")
                 if identity is None or identity not in self._accounted:
+                    if "tokens" not in part:
+                        # Missing usage must surface as unknown accounting,
+                        # never settle silently as zero (audit A04).
+                        self.usage_missing = True
                     usage = part.get("tokens") or {}
                     cache = usage.get("cache") or {}
                     values = ([usage["total"]] if "total" in usage else

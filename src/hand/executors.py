@@ -94,6 +94,20 @@ class OpenCodeExecutor(Executor):
         recovered = None
         if not replay and session_path.is_file():
             try:
+                stored_usage = json.loads(session_path.read_text(encoding="utf-8"))
+                # Seed the parser with the crashed attempt's persisted usage
+                # so a replayed RUNNING cannot lose its spend (audit A05).
+                # Step-finish ids are de-duplicated in the parser, so events
+                # replayed from the start do not double count.
+                seed_tokens = stored_usage.get("tokens")
+                if isinstance(seed_tokens, int) and not isinstance(seed_tokens, bool) and seed_tokens > 0:
+                    parser.tokens = seed_tokens
+                seed_cost = stored_usage.get("reported_cost")
+                if isinstance(seed_cost, (int, float)) and not isinstance(seed_cost, bool) and seed_cost > 0:
+                    parser.reported_cost = float(seed_cost)
+            except (OSError, ValueError, AttributeError):
+                pass
+            try:
                 stored = json.loads(session_path.read_text(encoding="utf-8"))
                 if not stored.get("fixture_replay") and stored.get("model") == model:
                     value = stored.get("session_id")
@@ -107,7 +121,9 @@ class OpenCodeExecutor(Executor):
             parser.consume(line)
             if parser.session_id:
                 session_path.write_text(json.dumps({"session_id": parser.session_id,
-                                                    "model": model, "fixture_replay": replay}) + "\n", encoding="utf-8")
+                                                    "model": model, "fixture_replay": replay,
+                                                    "tokens": parser.tokens,
+                                                    "reported_cost": parser.reported_cost}) + "\n", encoding="utf-8")
 
         raw.write_bytes(b"")
         stderr.write_bytes(b"")
@@ -173,6 +189,8 @@ class OpenCodeExecutor(Executor):
         except (OSError, ValueError) as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
         errors.extend(parser.errors)
+        if not replay and parser.usage_missing:
+            errors.append("OpenCode step_finish missing token usage; cost accounting unavailable")
         if not parser.finished:
             errors.append("OpenCode stream ended without a terminal step_finish")
         if not parser.session_id:
