@@ -57,7 +57,9 @@ def test_fixture_demo_runs_real_aabb_gate(tmp_path, monkeypatch, capsys):
     assert cli.main(["demo", "--executor", "opencode-fixture"]) == 0
     capsys.readouterr()
     evidence = json.loads(next((tmp_path / "outbox").glob("*/evidence.json")).read_text())
-    assert evidence["status"] == "verified"
+    # R2-08: a fixture replay is synthetic provenance; like the fake
+    # executor (audit G3) it may only ever be stamped simulated.
+    assert evidence["status"] == "simulated"
     assert evidence["gate_reports"]["gate_aabb"]["passed"] is True
     assert "fake" not in evidence["gate_reports"]["gate_aabb"]
     assert evidence["cost"]["tokens"] == 22

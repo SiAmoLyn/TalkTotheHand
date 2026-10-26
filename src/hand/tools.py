@@ -204,7 +204,12 @@ def godot_run(project: Path, *, workspace: Path, allowed_directories: list[Path]
             result.update(status="failed" if failed else "blocked", passed=False,
                           error=f"Godot verification FAIL={failed}, PASS={passed}; explicit PASS evidence required")
         return result
-    return _pkg4_report("godot_run", workspace, allowed_directories, result_path, [project], action)
+    # Secondary inputs count as inputs: the report and its logs must never
+    # overwrite the project manifest or the verify script either (R2-06).
+    inputs = [project, Path(project) / "project.godot"]
+    if script:
+        inputs.append(script)
+    return _pkg4_report("godot_run", workspace, allowed_directories, result_path, inputs, action)
 
 
 def _number(value: Any, label: str, *, nonnegative: bool = False) -> float:
@@ -320,7 +325,13 @@ def gate_clipsim(artifact: Path, reference: Path, *, workspace: Path,
         result.update(score=score, reference_band=[low, high], reference_sha256=reference_sha256,
                       passed=passed, status="passed" if passed else "failed")
         return result
-    return _pkg4_report("gate_clipsim", workspace, allowed_directories, result_path, [artifact, reference], action)
+    # The resolved adapter script is an input too: the report and its logs
+    # must never overwrite it (R2-06).
+    inputs = [artifact, reference]
+    configured = script or os.environ.get("HAND_CLIPSIM_SCRIPT")
+    if configured:
+        inputs.append(configured)
+    return _pkg4_report("gate_clipsim", workspace, allowed_directories, result_path, inputs, action)
 
 
 def _pkg4_report(tool: str, workspace: Path, allowed: list[Path] | None,

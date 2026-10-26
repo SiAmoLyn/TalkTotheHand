@@ -92,38 +92,84 @@ class OpenCodeExecutor(Executor):
         fixture = self.fixture or task.opencode.fixture
         replay = fixture is not None
         recovered = None
+        # Task ledger for this workspace (R2-01/02/03/05/11). The persisted
+        # session file is the cumulative ledger: totals plus the ids of the
+        # step-finish events already counted, whether usage was ever
+        # unknown, how much active time is still unsettled, and the
+        # settlement baseline — the totals a previous execute() already
+        # returned as evidence. Evidence from this call reports only the
+        # unsettled delta (cumulative minus baseline), so graph retries add
+        # it exactly once; a crashed attempt never reached its final
+        # persist, so its spend stays unsettled and is reported by the
+        # resumed run instead of being lost (audit A05) or doubled.
+        # A ledger written by a fixture replay, or for another model, is
+        # synthetic/foreign usage and is never seeded into a real run.
+        settled_tokens = 0
+        settled_cost = 0.0
+        pending_minutes = 0.0
         if not replay and session_path.is_file():
             try:
-                stored_usage = json.loads(session_path.read_text(encoding="utf-8"))
-                # Seed the parser with the crashed attempt's persisted usage
-                # so a replayed RUNNING cannot lose its spend (audit A05).
-                # Step-finish ids are de-duplicated in the parser, so events
-                # replayed from the start do not double count.
-                seed_tokens = stored_usage.get("tokens")
-                if isinstance(seed_tokens, int) and not isinstance(seed_tokens, bool) and seed_tokens > 0:
-                    parser.tokens = seed_tokens
-                seed_cost = stored_usage.get("reported_cost")
-                if isinstance(seed_cost, (int, float)) and not isinstance(seed_cost, bool) and seed_cost > 0:
-                    parser.reported_cost = float(seed_cost)
-            except (OSError, ValueError, AttributeError):
-                pass
-            try:
                 stored = json.loads(session_path.read_text(encoding="utf-8"))
-                if not stored.get("fixture_replay") and stored.get("model") == model:
+                if isinstance(stored, dict) and not stored.get("fixture_replay") \
+                        and stored.get("model") == model:
+                    seed_tokens = stored.get("tokens")
+                    if isinstance(seed_tokens, int) and not isinstance(seed_tokens, bool) and seed_tokens > 0:
+                        parser.tokens = seed_tokens
+                    seed_cost = stored.get("reported_cost")
+                    if isinstance(seed_cost, (int, float)) and not isinstance(seed_cost, bool) and seed_cost > 0:
+                        parser.reported_cost = float(seed_cost)
+                    accounted = stored.get("accounted_ids")
+                    if isinstance(accounted, list):
+                        parser._accounted = {item for item in accounted
+                                             if isinstance(item, (str, int)) and not isinstance(item, bool)}
+                    if stored.get("usage_missing") is True:
+                        # Unknown usage survives the crash; the resumed run
+                        # must stay blocked until it can be reconciled.
+                        parser.usage_missing = True
+                    baseline = stored.get("settled_tokens")
+                    if isinstance(baseline, int) and not isinstance(baseline, bool) and baseline >= 0:
+                        settled_tokens = min(baseline, parser.tokens)
+                    baseline_cost = stored.get("settled_cost")
+                    if isinstance(baseline_cost, (int, float)) and not isinstance(baseline_cost, bool) \
+                            and baseline_cost >= 0:
+                        settled_cost = min(float(baseline_cost), parser.reported_cost)
+                    unsettled = stored.get("pending_minutes")
+                    if isinstance(unsettled, (int, float)) and not isinstance(unsettled, bool) and unsettled > 0:
+                        pending_minutes = float(unsettled)
                     value = stored.get("session_id")
                     if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]+", value):
                         recovered = value
             except (OSError, ValueError, AttributeError):
-                # Never trust an invalid recovery file as a session argument.
+                # Never trust an invalid recovery file as a session or ledger.
+                pass
+
+        def persist_session(*, final: bool) -> None:
+            if not parser.session_id:
+                return
+            payload = {"session_id": parser.session_id, "model": model,
+                       "fixture_replay": replay, "tokens": parser.tokens,
+                       "reported_cost": parser.reported_cost,
+                       "accounted_ids": sorted(parser._accounted, key=str),
+                       "usage_missing": parser.usage_missing,
+                       "settled_tokens": parser.tokens if final else settled_tokens,
+                       "settled_cost": parser.reported_cost if final else settled_cost,
+                       "pending_minutes": 0.0 if final else
+                       pending_minutes + (time.monotonic() - started) / 60}
+            try:
+                session_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            except OSError:
                 pass
 
         def consume(line: bytes) -> None:
             parser.consume(line)
-            if parser.session_id:
-                session_path.write_text(json.dumps({"session_id": parser.session_id,
-                                                    "model": model, "fixture_replay": replay,
-                                                    "tokens": parser.tokens,
-                                                    "reported_cost": parser.reported_cost}) + "\n", encoding="utf-8")
+            # Checkpoint the ledger per event, exactly like the token
+            # spend: a crash after this line loses nothing already counted.
+            persist_session(final=False)
+
+        def unsettled_tokens() -> int:
+            # Budget checks and evidence use this call's unsettled delta,
+            # never the cumulative ledger total (R2-01).
+            return parser.tokens - settled_tokens
 
         raw.write_bytes(b"")
         stderr.write_bytes(b"")
@@ -141,7 +187,7 @@ class OpenCodeExecutor(Executor):
                             break
                         destination.write(line)
                         consume(line)
-                        if parser.tokens > task.budget.max_tokens:
+                        if unsettled_tokens() > task.budget.max_tokens:
                             errors.append("token budget exceeded")
                             break
                 model = "opencode-fixture (synthetic; no model called)"
@@ -182,7 +228,7 @@ class OpenCodeExecutor(Executor):
                 result = run_process(argv, cwd=workspace, stdout=raw, stderr=stderr,
                                      timeout=remaining, cancel=self.cancel_event,
                                      on_line=consume, env=env,
-                                     stop_reason=lambda: "token budget exceeded" if parser.tokens > task.budget.max_tokens else None)
+                                     stop_reason=lambda: "token budget exceeded" if unsettled_tokens() > task.budget.max_tokens else None)
                 if result["reason"] or result["exit_code"] != 0:
                     errors.append(str(result["reason"] or f"OpenCode exit {result['exit_code']}"))
                     errors.append(stderr.read_text(encoding="utf-8", errors="replace"))
@@ -195,7 +241,7 @@ class OpenCodeExecutor(Executor):
             errors.append("OpenCode stream ended without a terminal step_finish")
         if not parser.session_id:
             errors.append("OpenCode stream has no session id")
-        if parser.tokens > task.budget.max_tokens:
+        if unsettled_tokens() > task.budget.max_tokens:
             errors.append("token budget exceeded")
         summary = {**parser.summary(), "fixture_replay": replay, "process": result, "errors": errors}
         artifacts = []
@@ -206,11 +252,15 @@ class OpenCodeExecutor(Executor):
             except (OSError, ValueError) as exc:
                 errors.append(f"Deliverable {item.path}: {exc}")
         parsed_path.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        # This execute() is about to report its delta as evidence: settle
+        # the ledger so the next call only reports what is still unsettled.
+        persist_session(final=True)
         return EvidencePackage(
             status="blocked" if errors else "in_progress", artifacts=artifacts, gate_reports={},
             logs=[str(raw), str(stderr), str(parsed_path), str(config_path),
                   f"OpenCode session: {parser.session_id}", *errors],
-            cost=Cost(tokens=parser.tokens, minutes=(time.monotonic() - started) / 60,
+            cost=Cost(tokens=unsettled_tokens(),
+                      minutes=pending_minutes + (time.monotonic() - started) / 60,
                       model=model or "unconfigured"), unresolved=errors,
             self_check="Fixture pipeline only; no model/tool execution" if replay else "OpenCode candidate; independent gates and Sisi acceptance required",
         )

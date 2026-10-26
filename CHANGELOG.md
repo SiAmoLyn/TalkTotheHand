@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.2 — 2026-10-27
+
+Second debug round (Codex error-path audit of the 0.1.1 fixes; all 11
+findings reproduced against the real code before fixing, none dismissed):
+
+- Usage accounting is now a persisted ledger: totals, billed event ids and
+  unsettled minutes are written per event, so retries and crash recovery
+  can neither double-count nor silently lose spend; a resumed attempt
+  reports only its unsettled delta.
+- Ledgers from fixture replays or a different model are never seeded into
+  a real run, and fixture-replay evidence is stamped `simulated` like any
+  other synthetic run.
+- Token usage that is null, empty or structurally unrecognisable is
+  treated as unknown and blocks settlement (previously counted as zero);
+  the unknown-usage flag itself now survives a crash.
+- Report alias protection covers secondary inputs too: a gate report can
+  no longer overwrite a Godot verify script, `project.godot`, or the CLIP
+  adapter it resolved.
+- GUI receipts must be affirmatively successful: an empty or list payload
+  no longer passes a screenshot, and contradictory receipts such as
+  `{"ok": true, "success": "false"}` are rejected for click/type.
+- CLIP weights are structurally validated and loaded by local path only;
+  a corrupt cache fails before any load attempt instead of falling back
+  to a download.
+- The file-picker regression suite now executes the generated script
+  against fake panels (behavioural tests) instead of only matching
+  source strings.
+
 ## 0.1.1 — 2026-10-24
 
 Hardening release from a two-auditor cross-check (Codex + Gemini, findings

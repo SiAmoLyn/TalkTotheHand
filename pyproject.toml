@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "talktothehand"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local LangGraph execution with guarded tools and OpenCode JSON evidence"
 requires-python = ">=3.12,<3.13"
 dependencies = ["langgraph>=1.0,<2", "pydantic>=2.10,<3", "pyyaml>=6,<7", "mcp==2.3.0"]

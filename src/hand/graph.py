@@ -357,9 +357,19 @@ class HandRunner:
         if gated.get("reason"):
             return self._blocked({**state, "reason": gated["reason"]})
         evidence = EvidencePackage.model_validate(state["candidate"])
-        # A simulated run must never be stamped verified (audit G3).
+        # A simulated run must never be stamped verified (audit G3). That
+        # covers every synthetic provenance, not just the fake executor
+        # class: an OpenCode fixture replay calls no model either (R2-08).
         task = TaskPackage.model_validate(state["task"])
-        simulated = isinstance(self._effective_executor(task), FakeExecutor)
+        executor = self._effective_executor(task)
+        simulated = (
+            isinstance(executor, FakeExecutor)
+            or task.executor_hint == "opencode-fixture"
+            or task.opencode.fixture is not None
+            or (isinstance(executor, OpenCodeExecutor) and executor.fixture is not None)
+            or evidence.cost.model == "opencode-fixture (synthetic; no model called)"
+            or evidence.self_check.startswith("Fixture pipeline only")
+        )
         evidence.status = EvidenceStatus.SIMULATED if simulated else EvidenceStatus.VERIFIED
         evidence.logs = [*state["logs"], "Selected automatic gates passed; Sisi retains human acceptance authority"]
         evidence.cost.tokens = state["tokens"]

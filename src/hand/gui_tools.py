@@ -20,6 +20,29 @@ from typing import Any
 import uuid
 
 
+def _require_success_receipt(payload: Any) -> dict:
+    """A driver receipt only counts when it explicitly confirms success.
+
+    The payload must be an object, at least one of ok/success must be
+    present and truly True, and no declared status field may contradict
+    it — {"ok": true, "success": "false"} is a failure, not a pass, and
+    an empty receipt confirms nothing (R2-07).
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Cua receipt is not a JSON object")
+    if payload.get("error"):
+        raise ValueError("Cua receipt carries an error")
+    confirmed = False
+    for key in ("ok", "success"):
+        if key in payload:
+            if payload[key] is not True:
+                raise ValueError(f"Cua receipt field {key!r} does not confirm success")
+            confirmed = True
+    if not confirmed:
+        raise ValueError("Cua receipt lacks an explicit ok=true/success=true confirmation")
+    return payload
+
+
 def _gui(operation: str, *, workspace: Path, allowed_directories: list[Path] | None,
          result_path: Path | None, timeout: float, cancel: Event | None,
          options: dict[str, Any]) -> dict[str, Any]:
@@ -145,12 +168,10 @@ def _gui(operation: str, *, workspace: Path, allowed_directories: list[Path] | N
                 (payload.get("ok") is False or payload.get("success") is False or payload.get("error"))):
             raise ValueError("Cua returned an invalid or failed JSON receipt")
         if operation == "screenshot":
-            # Status fields, when present, must be genuinely true — a string
-            # "false" is not a success receipt (audit G5).
-            if isinstance(payload, dict):
-                for key in ("ok", "success"):
-                    if key in payload and payload[key] is not True:
-                        raise ValueError("Cua screenshot receipt does not confirm success")
+            # The receipt must explicitly confirm success: an empty object
+            # or a bare list confirms nothing, and any declared status
+            # field must be truly True (audit G5, R2-07).
+            _require_success_receipt(payload)
             if not artifact.is_file() or artifact.is_symlink() or not artifact.stat().st_size:
                 raise ValueError("Cua exited successfully without a new screenshot file")
             # A hash proves byte identity, not that the bytes are an image;
@@ -162,9 +183,7 @@ def _gui(operation: str, *, workspace: Path, allowed_directories: list[Path] | N
             if operation == "ax-tree":
                 artifact.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
             else:
-                if not isinstance(payload, dict) or not (payload.get("ok") is True or payload.get("success") is True):
-                    raise ValueError("Cua operation lacks an explicit ok=true/success=true receipt")
-                result["receipt"] = payload
+                result["receipt"] = _require_success_receipt(payload)
         if artifact is not None:
             artifact = project_path(workspace, artifact)
             digest = hashlib.sha256(artifact.read_bytes()).hexdigest()

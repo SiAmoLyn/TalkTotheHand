@@ -29,12 +29,20 @@ def compute_score(image: str, reference: str) -> float:
 
     device = "cpu"
     # Offline contract: OpenAI CLIP's load() downloads weights over urllib
-    # when the cache is cold, ignoring HF offline switches (audit A12).
-    # Refuse unless the exact weights file is already cached locally.
+    # when called by model name and the cache entry fails its checksum,
+    # ignoring HF offline switches (audit A12, R2-09). So: refuse unless
+    # the weights file is already cached locally, validate the cached
+    # file structurally (a TorchScript weights file is a zip archive),
+    # and load it by explicit local path — the path form of clip.load
+    # reads the file directly and never enters the download path. A
+    # corrupt file then fails loudly in the loader instead of fetching.
     weights = Path.home() / ".cache" / "clip" / "ViT-L-14.pt"
     if not weights.is_file():
         raise RuntimeError(f"CLIP weights not cached at {weights}; offline adapter will not download")
-    model, preprocess = clip.load("ViT-L/14", device=device)
+    import zipfile
+    if weights.stat().st_size == 0 or not zipfile.is_zipfile(weights):
+        raise RuntimeError(f"CLIP weights at {weights} are not a valid TorchScript archive; refusing to use or download")
+    model, preprocess = clip.load(str(weights), device=device)
 
     def emb(path: str):
         x = preprocess(Image.open(path).convert("RGB")).unsqueeze(0).to(device)

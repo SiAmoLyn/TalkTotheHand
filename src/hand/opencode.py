@@ -52,15 +52,26 @@ class EventParser:
                 # Native events repeat totals if replayed; count each part once.
                 identity = part.get("id")
                 if identity is None or identity not in self._accounted:
-                    if "tokens" not in part:
-                        # Missing usage must surface as unknown accounting,
-                        # never settle silently as zero (audit A04).
+                    # Usage must be a recognisable counter object. Missing,
+                    # null, empty or unrecognisable structures are unknown
+                    # accounting, never a silent zero (audit A04, R2-04).
+                    usage = part.get("tokens")
+                    values: list = []
+                    countable = False
+                    if isinstance(usage, dict):
+                        cache = usage.get("cache") or {}
+                        if not isinstance(cache, dict):
+                            raise ValueError("invalid token counters")
+                        if "total" in usage:
+                            values, countable = [usage["total"]], True
+                        elif any(k in usage for k in ("input", "output", "reasoning")) or \
+                                any(k in cache for k in ("read", "write")):
+                            values = ([usage.get(k, 0) for k in ("input", "output", "reasoning")] +
+                                      [cache.get(k, 0) for k in ("read", "write")])
+                            countable = True
+                    if not countable:
                         self.usage_missing = True
-                    usage = part.get("tokens") or {}
-                    cache = usage.get("cache") or {}
-                    values = ([usage["total"]] if "total" in usage else
-                              [usage.get(k, 0) for k in ("input", "output", "reasoning")] +
-                              [cache.get(k, 0) for k in ("read", "write")])
+                        values = []
                     if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in values):
                         raise ValueError("invalid token counters")
                     self.tokens += sum(values)
