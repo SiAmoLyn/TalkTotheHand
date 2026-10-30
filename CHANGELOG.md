@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.3 — 2026-10-30
+
+Companion features for the hand's first real-model configuration
+(OpenCode default model `gpt-6.1-sol`, key provided by an OpenAI
+organization credit grant):
+
+- New `gate_vision` gate (16th registered tool): sends an image plus a
+  rubric to a vision model (default `gpt-6.1-sol`) and requires a strict
+  JSON verdict `{score, verdict, issues}`; a score at or above the
+  threshold (default 70) passes. A missing API key or any API failure
+  blocks the gate — it can never produce a synthetic pass. Complements
+  `gate_clipsim` for render review.
+- `web_fetch` implemented (previously a stub): standard library only,
+  http/https only, text content types only, 2 MB body cap, 15 s default
+  timeout, HTML reduced to readable text with the page title kept;
+  every failure is reported in the result, never raised.
+- OpenCode executor model resolution gains a third fallback: the
+  `model` field of the global OpenCode config
+  (`$XDG_CONFIG_HOME/opencode/opencode.json`, then
+  `~/.config/opencode/opencode.json`), after the task package and
+  `HAND_OPENCODE_MODEL`.
+- Tests: 358 passed / 2 skipped on the VM copy, 355 passed / 5 skipped
+  on the home Mac mini (0.1.2 baselines: 339/2 and 336/5). Two legacy
+  "no model configured" tests now isolate the global-config fallback.
+
 ## 0.1.2 — 2026-10-27
 
 Second debug round (Codex error-path audit of the 0.1.1 fixes; all 11

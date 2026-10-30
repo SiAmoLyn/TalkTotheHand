@@ -181,6 +181,10 @@ def test_telemetry_forced_off():
 
 def test_opencode_without_model_blocks(tmp_path, task_data, monkeypatch):
     monkeypatch.delenv("HAND_OPENCODE_MODEL", raising=False)
+    # Isolate the global-config fallback (executors._opencode_config_model):
+    # a developer machine may legitimately have a default model configured.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-config"))
+    monkeypatch.setenv("HOME", str(tmp_path / "no-home"))
     task_data["executor_hint"] = "opencode"
     with HandRunner(tmp_path) as runner:
         state = runner.run(TaskPackage.model_validate(task_data))

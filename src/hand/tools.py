@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import base64
 import subprocess
 import hashlib
+from html.parser import HTMLParser
 import json
 import math
 import os
 import re
 import sys
 from threading import Event
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 from .processes import run_process
@@ -334,6 +339,122 @@ def gate_clipsim(artifact: Path, reference: Path, *, workspace: Path,
     return _pkg4_report("gate_clipsim", workspace, allowed_directories, result_path, inputs, action)
 
 
+_VISION_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp"}
+
+_DEFAULT_VISION_RUBRIC = (
+    "请评审这张游戏美术渲染图，只按以下三项给一个 0-100 的整数总分："
+    "1) 构图完整性：主体完整入画、关键部位没有被裁切；"
+    "2) 明显穿模/破面：部件互相穿插、破洞、悬空、比例崩坏都要扣分并列出；"
+    "3) 与低多边形（low-poly）项目画风的贴合度：块面感、配色与整体风格是否一致。"
+)
+
+
+def _openai_api_key() -> str | None:
+    """Operator-provisioned key: OPENAI_API_KEY first, then OpenCode's auth store."""
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        return key
+    try:
+        auth = json.loads((Path.home() / ".local/share/opencode/auth.json").read_text(encoding="utf-8"))
+        value = auth.get("openai", {}).get("key") if isinstance(auth, dict) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def gate_vision(artifact: Path, *, workspace: Path,
+                allowed_directories: list[Path] | None = None,
+                rubric: str | None = None, model: str = "gpt-6.1-sol",
+                threshold: float = 70, timeout: float = 300,
+                result_path: Path | None = None, cancel: Event | None = None) -> dict[str, Any]:
+    """Vision-model review gate: one image scored against a written rubric.
+
+    The image goes to the OpenAI chat/completions API (stdlib urllib, no SDK)
+    as a base64 data URL. The model must answer with strict JSON
+    {"score": int 0-100, "verdict": str, "issues": [str]}; anything else is a
+    failed gate and the raw reply is kept as evidence. No key or no network
+    is blocked, never a fabricated pass.
+    """
+    def action(target: Path) -> dict:
+        image = fs_guard(artifact, workspace=workspace, allowed_directories=allowed_directories)
+        if not image.is_file():
+            raise FileNotFoundError(f"Vision input missing: {image}")
+        mime = _VISION_MIME.get(image.suffix.lower())
+        if mime is None:
+            raise ValueError(f"Unsupported image type for vision gate: {image.suffix}")
+        limit = _number(threshold, "threshold")
+        if not 0 <= limit <= 100:
+            raise ValueError("threshold must be within [0, 100]")
+        seconds = _number(timeout, "timeout")
+        if seconds <= 0:
+            raise ValueError("timeout must be positive")
+        data = image.read_bytes()
+        base = {"model": model, "threshold": limit, "source_path": str(image),
+                "source_sha256": hashlib.sha256(data).hexdigest()}
+        if cancel is not None and cancel.is_set():
+            return {**base, "status": "blocked", "passed": False, "error": "cancelled"}
+        key = _openai_api_key()
+        if not key:
+            return {**base, "status": "blocked", "passed": False,
+                    "error": "OpenAI API key not configured "
+                             "(OPENAI_API_KEY or ~/.local/share/opencode/auth.json)"}
+        prompt = (rubric or _DEFAULT_VISION_RUBRIC) + (
+            '\n只输出一个 JSON 对象，不要输出任何其他文字：{"score": 0到100的整数, '
+            '"verdict": "一句话结论", "issues": ["发现的问题，没有则空数组"]}')
+        payload = {"model": model,
+                   "messages": [{"role": "user", "content": [
+                       {"type": "text", "text": prompt},
+                       {"type": "image_url", "image_url": {
+                           "url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")}}]}],
+                   "response_format": {"type": "json_object"}}
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"), method="POST",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=seconds) as response:
+                reply = json.loads(response.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                detail = ""
+            return {**base, "status": "blocked", "passed": False, "http_status": exc.code,
+                    "error": f"HTTPError: {exc.reason}" + (f": {detail}" if detail else "")}
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            return {**base, "status": "blocked", "passed": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        usage = reply.get("usage") if isinstance(reply, dict) else None
+        content: Any = None
+        try:
+            content = reply["choices"][0]["message"]["content"]
+            verdict_payload = json.loads(content)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            excerpt = content if isinstance(content, str) else json.dumps(reply, ensure_ascii=False)
+            return {**base, "status": "failed", "passed": False, "usage": usage,
+                    "error": f"Vision reply is not the required JSON: {type(exc).__name__}: {exc}",
+                    "raw_excerpt": excerpt[:500]}
+        problems = []
+        score = verdict_payload.get("score") if isinstance(verdict_payload, dict) else None
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 100:
+            problems.append("score must be an int within [0, 100]")
+        verdict = verdict_payload.get("verdict") if isinstance(verdict_payload, dict) else None
+        if not isinstance(verdict, str):
+            problems.append("verdict must be a string")
+        issues = verdict_payload.get("issues") if isinstance(verdict_payload, dict) else None
+        if not isinstance(issues, list) or not all(isinstance(item, str) for item in issues):
+            problems.append("issues must be a list of strings")
+        if problems:
+            return {**base, "status": "failed", "passed": False, "usage": usage,
+                    "error": "Vision reply failed validation: " + "; ".join(problems),
+                    "raw_excerpt": content[:500]}
+        passed = score >= limit
+        return {**base, "status": "passed" if passed else "failed", "passed": passed,
+                "score": score, "verdict": verdict, "issues": issues, "usage": usage}
+    return _pkg4_report("gate_vision", workspace, allowed_directories, result_path, [artifact], action)
+
+
 def _pkg4_report(tool: str, workspace: Path, allowed: list[Path] | None,
                  result_path: Path | None, inputs: list[Any], action: Any) -> dict[str, Any]:
     """Reject output/input aliases before _report creates a caller's directory."""
@@ -599,15 +720,120 @@ def ssh_dispatch(node: str, task: dict[str, Any] | list[str], *, workspace: Path
                         [configured] if configured else [], action)
 
 
-def web_fetch(url: str) -> dict[str, Any]:
-    raise NotImplementedError("Package 2+: research tool")
+class _TextExtractor(HTMLParser):
+    """Readable-text extraction: page text without script/style, plus title."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._title_parts: list[str] = []
+        self._skipped = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in ("script", "style"):
+            self._skipped += 1
+        elif tag == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._skipped:
+            self._skipped -= 1
+        elif tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._skipped:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+        elif data.strip():
+            self._parts.append(data.strip())
+
+    @property
+    def title(self) -> str | None:
+        title = " ".join("".join(self._title_parts).split())
+        return title or None
+
+    @property
+    def text(self) -> str:
+        return " ".join(" ".join(self._parts).split())
+
+
+def web_fetch(url: str, *, timeout: float = 15, max_bytes: int = 2 * 1024 * 1024,
+              max_chars: int = 20000) -> dict[str, Any]:
+    """Fetch one http(s) page as readable text, standard library only.
+
+    Text-class content types only; the body is capped at max_bytes and the
+    extracted text at max_chars, with truncation reported, never hidden.
+    Every failure is an honest blocked/failed report: nothing raises and no
+    content is invented.
+    """
+    result: dict[str, Any] = {"tool": "web_fetch", "status": "blocked", "passed": False,
+                              "url": url, "final_url": None, "content_type": None,
+                              "http_status": None, "bytes": 0, "truncated": False,
+                              "title": None, "text": ""}
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        result["error"] = f"Only http/https URLs with a host are allowed: {url!r}"
+        return result
+    try:
+        seconds = _number(timeout, "timeout")
+        if seconds <= 0:
+            raise ValueError("timeout must be positive")
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+            raise ValueError("max_bytes must be a positive int")
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 0:
+            raise ValueError("max_chars must be a nonnegative int")
+    except ValueError as exc:
+        result["error"] = f"ValueError: {exc}"
+        return result
+    request = urllib.request.Request(url, headers={"User-Agent": "talktothehand web_fetch"})
+    try:
+        with urllib.request.urlopen(request, timeout=seconds) as response:
+            result["http_status"] = response.status
+            result["final_url"] = response.geturl()
+            content_type = response.headers.get_content_type()
+            result["content_type"] = content_type
+            if not (content_type.startswith("text/") or
+                    content_type in ("application/json", "application/xhtml+xml")):
+                result["error"] = f"Content type is not textual: {content_type}"
+                return result
+            body = response.read(max_bytes + 1)
+            charset = response.headers.get_content_charset() or "utf-8"
+    except urllib.error.HTTPError as exc:
+        result.update(status="failed", http_status=exc.code, error=f"HTTPError: {exc.reason}")
+        return result
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        return result
+    if len(body) > max_bytes:
+        result["truncated"] = True
+        body = body[:max_bytes]
+    result["bytes"] = len(body)
+    try:
+        text = body.decode(charset, errors="replace")
+    except LookupError:
+        text = body.decode("utf-8", errors="replace")
+    if content_type == "text/html":
+        extractor = _TextExtractor()
+        extractor.feed(text)
+        extractor.close()
+        result["title"] = extractor.title
+        text = extractor.text
+    if len(text) > max_chars:
+        result["truncated"] = True
+        text = text[:max_chars]
+    result["text"] = text
+    result.update(status="passed", passed=True)
+    return result
 
 
 from .gui_tools import gui_screenshot, gui_ax_tree, gui_click, gui_type, gui_pick_file
 
 
 TOOL_REGISTRY = {function.__name__: function for function in (
-    fs_guard, git_snapshot, blender_run, godot_run, gate_aabb, gate_clipsim,
+    fs_guard, git_snapshot, blender_run, godot_run, gate_aabb, gate_clipsim, gate_vision,
     gate_render_review, mocap_metrics, ssh_dispatch, web_fetch,
     gui_screenshot, gui_ax_tree, gui_click, gui_type, gui_pick_file,
 )}

@@ -56,9 +56,12 @@ def test_git_failure_is_recorded_without_raising(tmp_path):
     assert "git missing" in result.log
 
 
-def test_tool_registry_contains_unimplemented_stubs():
-    for name in ("blender_run", "godot_run", "gate_aabb", "gate_clipsim", "gate_render_review",
-                 "mocap_metrics", "ssh_dispatch", "web_fetch"):
+def test_tool_registry_membership_and_remaining_stub():
+    for name in ("blender_run", "godot_run", "gate_aabb", "gate_clipsim", "gate_vision",
+                 "gate_render_review", "mocap_metrics", "ssh_dispatch", "web_fetch"):
         assert name in TOOL_REGISTRY
+    # mocap_metrics is still an unimplemented stub. web_fetch was implemented
+    # in the 2026-10-30 package: it answers with an honest report, offline.
     with pytest.raises(NotImplementedError):
-        TOOL_REGISTRY["web_fetch"]("https://example.invalid")
+        TOOL_REGISTRY["mocap_metrics"](Path("capture.json"))
+    assert TOOL_REGISTRY["web_fetch"]("ftp://example.invalid")["status"] == "blocked"

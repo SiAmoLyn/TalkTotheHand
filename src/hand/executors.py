@@ -17,6 +17,30 @@ from .contracts import Artifact, Cost, EvidencePackage, TaskPackage
 from .tools import fs_guard
 
 
+def _opencode_config_model() -> str | None:
+    """Last-resort model: the ``model`` field of the operator's OpenCode config.
+
+    Looks at $XDG_CONFIG_HOME/opencode/opencode.json first, then
+    ~/.config/opencode/opencode.json. A missing or malformed file simply
+    means "not configured"; the caller keeps its original error.
+    """
+    candidates = []
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        candidates.append(Path(config_home) / "opencode" / "opencode.json")
+    candidates.append(Path.home() / ".config" / "opencode" / "opencode.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            value = payload.get("model")
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
 class LLM(ABC):
     @abstractmethod
     def plan(self, task: TaskPackage) -> str:
@@ -88,7 +112,7 @@ class OpenCodeExecutor(Executor):
         parser = EventParser()
         session_path = fs_guard(".hand/opencode/session.json", workspace=workspace)
         errors, result = [], {}
-        model = task.opencode.model or os.environ.get("HAND_OPENCODE_MODEL")
+        model = task.opencode.model or os.environ.get("HAND_OPENCODE_MODEL") or _opencode_config_model()
         fixture = self.fixture or task.opencode.fixture
         replay = fixture is not None
         recovered = None
@@ -193,7 +217,8 @@ class OpenCodeExecutor(Executor):
                 model = "opencode-fixture (synthetic; no model called)"
             else:
                 if not model:
-                    raise ValueError("OpenCode model not configured: set opencode.model or HAND_OPENCODE_MODEL")
+                    raise ValueError("OpenCode model not configured: set opencode.model, "
+                                     "HAND_OPENCODE_MODEL, or the model field in opencode.json")
                 if not re.fullmatch(r"[^/\s]+/[^\s]+", model):
                     raise ValueError("OpenCode model must be provider/model")
                 argv = [self.executable, "run", "--format", "json", "--dir", str(workspace), "-m", model]

@@ -275,7 +275,7 @@ class HandRunner:
             if self.cancel_event.is_set():
                 raise ValueError("cancelled")
             if run_tools:
-                real_tools = {"gate_aabb", "gate_clipsim", "godot_run", "blender_run"}
+                real_tools = {"gate_aabb", "gate_clipsim", "gate_vision", "godot_run", "blender_run"}
                 for name in task.gates:
                     if self.cancel_event.is_set():
                         raise ValueError("cancelled")

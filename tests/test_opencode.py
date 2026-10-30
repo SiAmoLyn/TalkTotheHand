@@ -84,6 +84,10 @@ def test_policy_denies_shell_and_sensitive_files(tmp_path):
 
 def test_no_model_or_missing_executable_blocks(tmp_path, task_data, monkeypatch):
     monkeypatch.delenv("HAND_OPENCODE_MODEL", raising=False)
+    # Isolate the global-config fallback (executors._opencode_config_model):
+    # a developer machine may legitimately have a default model configured.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-config"))
+    monkeypatch.setenv("HOME", str(tmp_path / "no-home"))
     task = TaskPackage.model_validate(task_data)
     result = OpenCodeExecutor().execute(task, tmp_path, attempt=1, allowed_directories=[])
     assert result.status == "blocked"
